@@ -60,16 +60,48 @@ class AwgClient:
     endpoint: str = ""
 
 
-@dataclass
 class AwgState:
-    container: str
-    interface: str
-    listen_port: int
-    server_public_key: str
-    endpoint: str
-    address: str
-    params: dict[str, str] = field(default_factory=dict)
-    clients: list[AwgClient] = field(default_factory=list)
+    """Состояние ноды. Имя интерфейса приходит от ноды и подставляется в
+    shell-команды, поэтому храним его приватным и валидируем при каждом
+    обращении — это закрывает инъекцию команд даже если поле перезапишут."""
+
+    def __init__(
+        self,
+        container: str,
+        interface: str,
+        listen_port: int,
+        server_public_key: str,
+        endpoint: str,
+        address: str,
+        params: dict[str, str] | None = None,
+        clients: list["AwgClient"] | None = None,
+    ) -> None:
+        # имя контейнера тоже приходит от ноды и подставляется в команды —
+        # храним приватно и валидируем при каждом обращении
+        self._container = _safe_container(container)
+        self._interface = _safe_interface(interface)
+        self.listen_port = listen_port
+        self.server_public_key = server_public_key
+        self.endpoint = endpoint
+        self.address = address
+        self.params = params if params is not None else {}
+        self.clients = clients if clients is not None else []
+
+    @property
+    def container(self) -> str:
+        return _safe_container(self._container)
+
+    @container.setter
+    def container(self, value: str) -> None:
+        self._container = _safe_container(value)
+
+    @property
+    def interface(self) -> str:
+        return _safe_interface(self._interface)
+
+    @interface.setter
+    def interface(self, value: str) -> None:
+        self._interface = _safe_interface(value)
 
 
 def generate_keypair() -> tuple[str, str]:
@@ -354,6 +386,16 @@ def _safe_interface(name: str) -> str:
     return name
 
 
+# docker-имя контейнера тоже приходит от ноды и подставляется в shell-команды
+_CONTAINER_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]{0,127}$")
+
+
+def _safe_container(name: str) -> str:
+    if not _CONTAINER_RE.fullmatch(name):
+        raise AwgError("Недопустимое имя контейнера от ноды")
+    return name
+
+
 def _safe_ip(ip: str) -> str:
     try:
         ipaddress.ip_address(ip)
@@ -417,6 +459,8 @@ async def read_state(
 ) -> AwgState:
     if container is None:
         container = await detect_container(conn)
+    # имя контейнера может прийти от ноды — валидируем до подстановки в команды
+    container = _safe_container(container)
     iface_path = (
         await _run(conn, _docker_exec(container, f"ls {AWG_DIR}/*.conf 2>/dev/null | head -1"))
     ).strip()
